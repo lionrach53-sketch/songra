@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:14-alpine
+    container_name: resolvehub_db
+    environment:
+      POSTGRES_USER: resolvehub
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      POSTGRES_DB: resolvehub
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resolvehub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: resolvehub_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resolvehub_api
+    environment:
+      DATABASE_URL: postgresql://resolvehub:${DB_PASSWORD:-changeme123}@db:5432/resolvehub
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      AT_API_KEY: ${AFRICAS_TALKING_API_KEY}
+      AT_USERNAME: ${AFRICAS_TALKING_USERNAME}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Celery Worker for async tasks
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resolvehub_celery
+    environment:
+      DATABASE_URL: postgresql://resolvehub:${DB_PASSWORD:-changeme123}@db:5432/resolvehub
+      REDIS_URL: redis://redis:6379
+      AT_API_KEY: ${AFRICAS_TALKING_API_KEY}
+      AT_USERNAME: ${AFRICAS_TALKING_USERNAME}
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - ./backend:/app
+    command: celery -A celery_app worker --loglevel=info
+
+  # Frontend Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: resolvehub_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+
+volumes:
+  postgres_data:
